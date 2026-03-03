@@ -6,579 +6,511 @@
 <title>VOID BLADE — Space Roguelike</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { background: #000; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; font-family: monospace; }
-canvas { image-rendering: pixelated; image-rendering: crisp-edges; border: 1px solid #333; }
-#ui { position: absolute; top: 10px; left: 10px; color: #0f0; font-size: 14px; z-index: 10; }
-#title-screen { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; background: #000; z-index: 20; }
-#title-screen h1 { color: #0ff; font-size: 48px; margin-bottom: 10px; text-shadow: 0 0 20px #0ff; }
-#title-screen p { color: #888; font-size: 14px; margin-bottom: 5px; }
-#title-screen .start { color: #0f0; font-size: 18px; margin-top: 30px; animation: blink 1s infinite; }
-@keyframes blink { 50% { opacity: 0.3; } }
-#death-screen { position: absolute; inset: 0; display: none; flex-direction: column; justify-content: center; align-items: center; background: rgba(0,0,0,0.85); z-index: 20; }
-#death-screen h1 { color: #f00; font-size: 36px; margin-bottom: 10px; }
-#death-screen p { color: #888; font-size: 14px; margin-bottom: 5px; }
-#death-screen .restart { color: #0f0; font-size: 18px; margin-top: 20px; animation: blink 1s infinite; }
-#room-clear { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); color: #0ff; font-size: 24px; display: none; z-index: 15; text-shadow: 0 0 10px #0ff; }
+body { background: #0a0a12; overflow: hidden; font-family: 'Courier New', monospace; }
+canvas { display: block; width: 100vw; height: 100vh; image-rendering: pixelated; image-rendering: crisp-edges; cursor: crosshair; }
 </style>
 </head>
 <body>
-<div id="title-screen">
-  <h1>VOID BLADE</h1>
-  <p style="color:#0ff; font-size:16px; margin-bottom:20px;">A Space Roguelike</p>
-  <p>WASD — Move</p>
-  <p>SPACE — Slash</p>
-  <p>1/2/3 — Switch Sword</p>
-  <p>SHIFT — Dash</p>
-  <p class="start" style="cursor:pointer" onclick="startGame()">[ CLICK OR PRESS ENTER TO BEGIN ]</p>
-</div>
-<div id="death-screen">
-  <h1>YOU DIED</h1>
-  <p id="death-stats"></p>
-  <p class="restart" style="cursor:pointer" onclick="startGame()">[ CLICK OR PRESS ENTER TO RETRY ]</p>
-</div>
-<div id="room-clear">ROOM CLEAR — FIND THE EXIT</div>
-<div id="ui">
-  <div id="hp-bar"></div>
-  <div id="sword-name"></div>
-  <div id="room-info"></div>
-  <div id="score-info"></div>
-</div>
-<canvas id="game"></canvas>
-
+<canvas id="c"></canvas>
 <script>
-const canvas = document.getElementById('game');
-const ctx = canvas.getContext('2d');
-const SCALE = 3;
-const W = 256;
-const H = 192;
-canvas.width = W * SCALE;
-canvas.height = H * SCALE;
-ctx.imageSmoothingEnabled = false;
+const c = document.getElementById('c');
+const x = c.getContext('2d');
 
-// Offscreen buffer
-const buf = document.createElement('canvas');
-buf.width = W; buf.height = H;
-const bx = buf.getContext('2d');
+// Fill viewport
+function resize() {
+  c.width = window.innerWidth;
+  c.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
 
-// Game state
-let state = 'title'; // title, playing, dead
+// State
+let state = 'title'; // title | playing | dead
 let keys = {};
-let player, enemies, particles, projectiles, pickups, rooms, currentRoom, roomNum, score, killCount;
-let slashCooldown = 0, dashCooldown = 0, dashTimer = 0, invTimer = 0;
-let screenShake = 0;
-let frameCount = 0;
-let exitDoor = null;
+let frame = 0;
 
-// Swords
+// Player
+let P = { x: 0, y: 0, hp: 5, maxHp: 5, sword: 0, facing: 0, speed: 3, slashing: false, slashAngle: 0, slashT: 0, dashT: 0, dashCD: 0, slashCD: 0, invT: 0 };
+let enemies = [], particles = [], bullets = [], pickups = [];
+let roomNum = 0, score = 0, kills = 0, exitDoor = null, shake = 0;
+
 const SWORDS = [
-  { name: 'Plasma Katana', color: '#0ff', damage: 1, range: 20, speed: 8, arc: 2.2 },
-  { name: 'Void Cleaver', color: '#f0f', damage: 2, range: 26, speed: 14, arc: 3.0 },
-  { name: 'Ion Dagger', color: '#ff0', damage: 1, range: 14, speed: 4, arc: 1.6 },
+  { name: 'Plasma Katana', col: '#0ff', dmg: 1, range: 50, spd: 12, arc: 2.2 },
+  { name: 'Void Cleaver', col: '#f0f', dmg: 2, range: 65, spd: 20, arc: 3.0 },
+  { name: 'Ion Dagger', col: '#ff0', dmg: 1, range: 35, spd: 6, arc: 1.6 },
 ];
 
-// Enemy types
-const ENEMY_TYPES = {
-  alien_grunt: { hp: 2, speed: 0.6, color: '#0f0', size: 6, damage: 1, score: 10, ai: 'chase' },
-  alien_spitter: { hp: 1, speed: 0.3, color: '#0a0', size: 5, damage: 1, score: 15, ai: 'ranged' },
-  alien_brute: { hp: 5, speed: 0.35, color: '#0f0', size: 9, damage: 2, score: 25, ai: 'chase' },
-  robot_drone: { hp: 2, speed: 0.5, color: '#aaa', size: 5, damage: 1, score: 10, ai: 'orbit' },
-  robot_turret: { hp: 3, speed: 0, color: '#888', size: 7, damage: 1, score: 20, ai: 'turret' },
-  robot_heavy: { hp: 6, speed: 0.25, color: '#ccc', size: 10, damage: 2, score: 30, ai: 'chase' },
+const ETYPES = {
+  grunt:   { hp:2, spd:1.2, col:'#3f3', sz:14, dmg:1, pts:10, ai:'chase' },
+  spitter: { hp:1, spd:0.6, col:'#0c0', sz:12, dmg:1, pts:15, ai:'ranged' },
+  brute:   { hp:5, spd:0.7, col:'#5f5', sz:22, dmg:2, pts:25, ai:'chase' },
+  drone:   { hp:2, spd:1.0, col:'#bbb', sz:12, dmg:1, pts:10, ai:'orbit' },
+  turret:  { hp:3, spd:0,   col:'#999', sz:16, dmg:1, pts:20, ai:'turret' },
+  heavy:   { hp:6, spd:0.5, col:'#ddd', sz:24, dmg:2, pts:30, ai:'chase' },
 };
 
-function init() {
-  player = {
-    x: W/2, y: H/2, vx: 0, vy: 0,
-    hp: 5, maxHp: 5,
-    sword: 0, facing: 0,
-    slashing: false, slashAngle: 0, slashProgress: 0,
-    dashing: false,
-    speed: 1.5,
-  };
-  enemies = [];
-  particles = [];
-  projectiles = [];
-  pickups = [];
-  roomNum = 0;
-  score = 0;
-  killCount = 0;
-  exitDoor = null;
-  generateRoom();
+function dist(a,b) { return Math.hypot(b.x-a.x, b.y-a.y); }
+function ang(a,b) { return Math.atan2(b.y-a.y, b.x-a.x); }
+
+function spawnP(px, py, col, n, spd) {
+  for (let i = 0; i < n; i++) {
+    let a = Math.random()*Math.PI*2, s = Math.random()*spd;
+    particles.push({ x:px, y:py, vx:Math.cos(a)*s, vy:Math.sin(a)*s, life:30+Math.random()*20, col, sz:2+Math.random()*4 });
+  }
 }
 
-function generateRoom() {
+function init() {
+  P.x = c.width/2; P.y = c.height/2;
+  P.hp = P.maxHp; P.sword = 0; P.facing = 0;
+  P.slashing = false; P.dashT = 0; P.dashCD = 0; P.slashCD = 0; P.invT = 0;
+  enemies = []; particles = []; bullets = []; pickups = [];
+  roomNum = 0; score = 0; kills = 0; exitDoor = null; shake = 0;
+  nextRoom();
+}
+
+function nextRoom() {
   roomNum++;
-  enemies = [];
-  projectiles = [];
-  pickups = [];
-  exitDoor = null;
-  
-  let numEnemies = Math.min(3 + roomNum * 2, 20);
+  enemies = []; bullets = []; pickups = []; exitDoor = null;
+  let n = Math.min(3 + roomNum * 2, 15);
   let types;
-  
   if (roomNum % 5 === 0) {
-    // Boss room
-    types = roomNum % 2 === 0 
-      ? [{ ...ENEMY_TYPES.alien_brute, hp: 10 + roomNum, score: 100, size: 14 }]
-      : [{ ...ENEMY_TYPES.robot_heavy, hp: 10 + roomNum, score: 100, size: 14 }];
-    numEnemies = 1;
+    // Boss
+    let base = roomNum % 2 === 0 ? ETYPES.brute : ETYPES.heavy;
+    types = [{ ...base, hp: 12 + roomNum * 2, pts: 100, sz: 40 }];
+    n = 1;
   } else if (roomNum % 2 === 0) {
-    // Robot room
-    types = [ENEMY_TYPES.robot_drone, ENEMY_TYPES.robot_turret, ENEMY_TYPES.robot_heavy];
+    types = [ETYPES.drone, ETYPES.turret, ETYPES.heavy];
   } else {
-    // Alien room
-    types = [ENEMY_TYPES.alien_grunt, ENEMY_TYPES.alien_spitter, ENEMY_TYPES.alien_brute];
+    types = [ETYPES.grunt, ETYPES.spitter, ETYPES.brute];
   }
-  
-  for (let i = 0; i < numEnemies; i++) {
+  for (let i = 0; i < n; i++) {
     let t = types[Math.floor(Math.random() * types.length)];
     let ex, ey;
     do {
-      ex = 30 + Math.random() * (W - 60);
-      ey = 30 + Math.random() * (H - 60);
-    } while (dist(ex, ey, player.x, player.y) < 50);
-    
-    enemies.push({
-      x: ex, y: ey, vx: 0, vy: 0,
-      hp: t.hp, maxHp: t.hp,
-      color: t.color, size: t.size,
-      damage: t.damage, score: t.score,
-      ai: t.ai, speed: t.speed,
-      shootTimer: 60 + Math.random() * 60,
-      hitFlash: 0,
-      orbitAngle: Math.random() * Math.PI * 2,
-    });
+      ex = 60 + Math.random() * (c.width - 120);
+      ey = 60 + Math.random() * (c.height - 120);
+    } while (Math.hypot(ex - P.x, ey - P.y) < 120);
+    enemies.push({ x:ex, y:ey, ...t, maxHp:t.hp, flash:0, shootT:60+Math.random()*60, orbA:Math.random()*Math.PI*2 });
   }
-  
-  player.x = W/2;
-  player.y = H/2;
-  
-  document.getElementById('room-info').textContent = `ROOM ${roomNum}${roomNum % 5 === 0 ? ' — BOSS' : roomNum % 2 === 0 ? ' — ROBOTS' : ' — ALIENS'}`;
+  P.x = c.width/2; P.y = c.height/2;
 }
 
-function dist(x1, y1, x2, y2) {
-  return Math.sqrt((x2-x1)**2 + (y2-y1)**2);
-}
+function update() {
+  if (state !== 'playing') return;
+  frame++;
 
-function angle(x1, y1, x2, y2) {
-  return Math.atan2(y2-y1, x2-x1);
-}
-
-function spawnParticles(x, y, color, count, speed) {
-  for (let i = 0; i < count; i++) {
-    let a = Math.random() * Math.PI * 2;
-    let s = Math.random() * speed;
-    particles.push({ x, y, vx: Math.cos(a)*s, vy: Math.sin(a)*s, life: 20 + Math.random()*20, color, size: 1 + Math.random()*2 });
-  }
-}
-
-function handleInput() {
+  // Input
   let dx = 0, dy = 0;
   if (keys['w'] || keys['arrowup']) dy = -1;
   if (keys['s'] || keys['arrowdown']) dy = 1;
   if (keys['a'] || keys['arrowleft']) dx = -1;
   if (keys['d'] || keys['arrowright']) dx = 1;
-  
   if (dx || dy) {
-    let len = Math.sqrt(dx*dx + dy*dy);
-    dx /= len; dy /= len;
-    player.facing = Math.atan2(dy, dx);
+    let l = Math.hypot(dx, dy); dx /= l; dy /= l;
+    P.facing = Math.atan2(dy, dx);
   }
-  
-  let spd = player.dashing ? player.speed * 3 : player.speed;
-  player.vx = dx * spd;
-  player.vy = dy * spd;
-}
+  let spd = P.dashT > 0 ? P.speed * 3.5 : P.speed;
+  P.x += dx * spd; P.y += dy * spd;
+  P.x = Math.max(20, Math.min(c.width - 20, P.x));
+  P.y = Math.max(20, Math.min(c.height - 20, P.y));
 
-function updatePlayer() {
-  handleInput();
-  
-  if (dashTimer > 0) {
-    dashTimer--;
-    player.dashing = dashTimer > 0;
-  }
-  if (dashCooldown > 0) dashCooldown--;
-  if (slashCooldown > 0) slashCooldown--;
-  if (invTimer > 0) invTimer--;
-  
-  player.x += player.vx;
-  player.y += player.vy;
-  player.x = Math.max(8, Math.min(W-8, player.x));
-  player.y = Math.max(8, Math.min(H-8, player.y));
-  
-  // Slash update
-  if (player.slashing) {
-    let sw = SWORDS[player.sword];
-    player.slashProgress += 0.15;
-    if (player.slashProgress >= 1) {
-      player.slashing = false;
-    } else {
-      // Check hit enemies
-      let sAngle = player.slashAngle - sw.arc/2 + sw.arc * player.slashProgress;
-      let tipX = player.x + Math.cos(sAngle) * sw.range;
-      let tipY = player.y + Math.sin(sAngle) * sw.range;
-      
+  if (P.dashT > 0) P.dashT--;
+  if (P.dashCD > 0) P.dashCD--;
+  if (P.slashCD > 0) P.slashCD--;
+  if (P.invT > 0) P.invT--;
+  if (shake > 0) shake--;
+
+  // Slash
+  if (P.slashing) {
+    let sw = SWORDS[P.sword];
+    P.slashT += 0.12;
+    if (P.slashT >= 1) { P.slashing = false; }
+    else {
+      let sA = P.slashAngle - sw.arc/2 + sw.arc * P.slashT;
+      let tx = P.x + Math.cos(sA) * sw.range;
+      let ty = P.y + Math.sin(sA) * sw.range;
       enemies.forEach(e => {
         if (e.hp <= 0) return;
-        if (dist(tipX, tipY, e.x, e.y) < e.size + 4) {
-          e.hp -= sw.damage;
-          e.hitFlash = 6;
-          let kb = 4;
-          let a = angle(player.x, player.y, e.x, e.y);
-          e.x += Math.cos(a) * kb;
-          e.y += Math.sin(a) * kb;
-          spawnParticles(e.x, e.y, sw.color, 5, 2);
-          screenShake = 3;
-          
+        if (Math.hypot(tx - e.x, ty - e.y) < e.sz + 8) {
+          e.hp -= sw.dmg; e.flash = 8;
+          let a = ang(P, e);
+          e.x += Math.cos(a) * 8; e.y += Math.sin(a) * 8;
+          spawnP(e.x, e.y, sw.col, 6, 4); shake = 4;
           if (e.hp <= 0) {
-            score += e.score;
-            killCount++;
-            spawnParticles(e.x, e.y, e.color, 15, 3);
-            // Random sword drop
-            if (Math.random() < 0.15) {
-              pickups.push({ x: e.x, y: e.y, type: 'sword', sword: Math.floor(Math.random() * 3), life: 300 });
-            }
-            if (Math.random() < 0.2) {
-              pickups.push({ x: e.x, y: e.y, type: 'heal', life: 300 });
-            }
+            score += e.pts; kills++;
+            spawnP(e.x, e.y, e.col, 20, 5);
+            if (Math.random() < 0.15) pickups.push({ x:e.x, y:e.y, type:'sword', sw:Math.floor(Math.random()*3), life:400 });
+            if (Math.random() < 0.2) pickups.push({ x:e.x, y:e.y, type:'heal', life:400 });
           }
         }
       });
     }
   }
-  
-  // Check exit door
-  if (exitDoor && dist(player.x, player.y, exitDoor.x, exitDoor.y) < 12) {
-    document.getElementById('room-clear').style.display = 'none';
-    generateRoom();
-  }
-  
-  // Check pickups
-  pickups = pickups.filter(p => {
-    if (dist(player.x, player.y, p.x, p.y) < 10) {
-      if (p.type === 'sword') {
-        player.sword = p.sword;
-        spawnParticles(p.x, p.y, SWORDS[p.sword].color, 10, 2);
-      } else if (p.type === 'heal') {
-        player.hp = Math.min(player.maxHp, player.hp + 1);
-        spawnParticles(p.x, p.y, '#f00', 8, 2);
-      }
-      return false;
-    }
-    p.life--;
-    return p.life > 0;
-  });
-}
 
-function updateEnemies() {
-  let allDead = true;
-  
+  // Enemies
+  let alive = 0;
   enemies.forEach(e => {
     if (e.hp <= 0) return;
-    allDead = false;
-    if (e.hitFlash > 0) e.hitFlash--;
-    
-    let a = angle(e.x, e.y, player.x, player.y);
-    let d = dist(e.x, e.y, player.x, player.y);
-    
-    switch(e.ai) {
+    alive++;
+    if (e.flash > 0) e.flash--;
+    let a = ang(e, P), d = dist(e, P);
+
+    switch (e.ai) {
       case 'chase':
-        if (d > 12) {
-          e.x += Math.cos(a) * e.speed;
-          e.y += Math.sin(a) * e.speed;
-        }
+        if (d > 20) { e.x += Math.cos(a)*e.spd; e.y += Math.sin(a)*e.spd; }
         break;
       case 'ranged':
-        if (d < 40) {
-          e.x -= Math.cos(a) * e.speed;
-          e.y -= Math.sin(a) * e.speed;
-        } else if (d > 80) {
-          e.x += Math.cos(a) * e.speed * 0.5;
-          e.y += Math.sin(a) * e.speed * 0.5;
-        }
-        e.shootTimer--;
-        if (e.shootTimer <= 0) {
-          projectiles.push({ x: e.x, y: e.y, vx: Math.cos(a)*2, vy: Math.sin(a)*2, life: 60, color: '#0f0', damage: e.damage });
-          e.shootTimer = 80 + Math.random() * 40;
+        if (d < 100) { e.x -= Math.cos(a)*e.spd; e.y -= Math.sin(a)*e.spd; }
+        else if (d > 200) { e.x += Math.cos(a)*e.spd*0.5; e.y += Math.sin(a)*e.spd*0.5; }
+        e.shootT--;
+        if (e.shootT <= 0) {
+          bullets.push({ x:e.x, y:e.y, vx:Math.cos(a)*3.5, vy:Math.sin(a)*3.5, life:80, col:'#0f0', dmg:e.dmg });
+          e.shootT = 70 + Math.random()*30;
         }
         break;
       case 'orbit':
-        e.orbitAngle += 0.03;
-        let targetX = player.x + Math.cos(e.orbitAngle) * 50;
-        let targetY = player.y + Math.sin(e.orbitAngle) * 50;
-        e.x += (targetX - e.x) * 0.03;
-        e.y += (targetY - e.y) * 0.03;
-        e.shootTimer--;
-        if (e.shootTimer <= 0) {
-          projectiles.push({ x: e.x, y: e.y, vx: Math.cos(a)*2.5, vy: Math.sin(a)*2.5, life: 50, color: '#ff0', damage: e.damage });
-          e.shootTimer = 60;
+        e.orbA += 0.025;
+        let tx = P.x + Math.cos(e.orbA)*120, ty = P.y + Math.sin(e.orbA)*120;
+        e.x += (tx - e.x)*0.03; e.y += (ty - e.y)*0.03;
+        e.shootT--;
+        if (e.shootT <= 0) {
+          bullets.push({ x:e.x, y:e.y, vx:Math.cos(a)*4, vy:Math.sin(a)*4, life:60, col:'#ff0', dmg:e.dmg });
+          e.shootT = 50;
         }
         break;
       case 'turret':
-        e.shootTimer--;
-        if (e.shootTimer <= 0) {
-          for (let i = 0; i < 3; i++) {
-            let spread = a + (i-1) * 0.3;
-            projectiles.push({ x: e.x, y: e.y, vx: Math.cos(spread)*1.8, vy: Math.sin(spread)*1.8, life: 70, color: '#f80', damage: e.damage });
+        e.shootT--;
+        if (e.shootT <= 0) {
+          for (let i = -1; i <= 1; i++) {
+            let sa = a + i * 0.25;
+            bullets.push({ x:e.x, y:e.y, vx:Math.cos(sa)*3, vy:Math.sin(sa)*3, life:80, col:'#f80', dmg:e.dmg });
           }
-          e.shootTimer = 90;
+          e.shootT = 80;
         }
         break;
     }
-    
-    e.x = Math.max(e.size, Math.min(W - e.size, e.x));
-    e.y = Math.max(e.size, Math.min(H - e.size, e.y));
-    
-    // Collision with player
-    if (!player.dashing && invTimer <= 0 && d < e.size + 5) {
-      player.hp -= e.damage;
-      invTimer = 30;
-      screenShake = 5;
-      spawnParticles(player.x, player.y, '#f00', 10, 3);
-      let ka = angle(e.x, e.y, player.x, player.y);
-      player.x += Math.cos(ka) * 8;
-      player.y += Math.sin(ka) * 8;
-      if (player.hp <= 0) {
-        state = 'dead';
-        document.getElementById('death-screen').style.display = 'flex';
-        document.getElementById('death-stats').textContent = `Room ${roomNum} — ${killCount} kills — Score: ${score}`;
-      }
+    e.x = Math.max(e.sz, Math.min(c.width-e.sz, e.x));
+    e.y = Math.max(e.sz, Math.min(c.height-e.sz, e.y));
+
+    // Contact damage
+    if (P.dashT <= 0 && P.invT <= 0 && d < e.sz + 10) {
+      P.hp -= e.dmg; P.invT = 40; shake = 6;
+      spawnP(P.x, P.y, '#f00', 12, 4);
+      let ka = ang(e, P);
+      P.x += Math.cos(ka) * 15; P.y += Math.sin(ka) * 15;
+      if (P.hp <= 0) state = 'dead';
     }
   });
-  
-  // Room cleared
-  if (allDead && !exitDoor && enemies.length > 0) {
-    exitDoor = { x: W - 20, y: H/2 };
-    document.getElementById('room-clear').style.display = 'block';
-  }
-}
 
-function updateProjectiles() {
-  projectiles = projectiles.filter(p => {
-    p.x += p.vx; p.y += p.vy;
-    p.life--;
-    if (p.x < 0 || p.x > W || p.y < 0 || p.y > H) return false;
-    if (p.life <= 0) return false;
-    
-    if (!player.dashing && invTimer <= 0 && dist(p.x, p.y, player.x, player.y) < 6) {
-      player.hp -= p.damage;
-      invTimer = 20;
-      screenShake = 3;
-      spawnParticles(player.x, player.y, '#f00', 6, 2);
-      if (player.hp <= 0) {
-        state = 'dead';
-        document.getElementById('death-screen').style.display = 'flex';
-        document.getElementById('death-stats').textContent = `Room ${roomNum} — ${killCount} kills — Score: ${score}`;
-      }
+  // Room clear
+  if (alive === 0 && !exitDoor && enemies.length > 0) {
+    exitDoor = { x: c.width - 40, y: c.height / 2 };
+  }
+  if (exitDoor && Math.hypot(P.x - exitDoor.x, P.y - exitDoor.y) < 25) {
+    exitDoor = null;
+    nextRoom();
+  }
+
+  // Bullets
+  bullets = bullets.filter(b => {
+    b.x += b.vx; b.y += b.vy; b.life--;
+    if (b.x < 0 || b.x > c.width || b.y < 0 || b.y > c.height || b.life <= 0) return false;
+    if (P.dashT <= 0 && P.invT <= 0 && Math.hypot(b.x - P.x, b.y - P.y) < 12) {
+      P.hp -= b.dmg; P.invT = 25; shake = 4;
+      spawnP(P.x, P.y, '#f00', 8, 3);
+      if (P.hp <= 0) state = 'dead';
       return false;
     }
     return true;
   });
-}
 
-function updateParticles() {
+  // Pickups
+  pickups = pickups.filter(p => {
+    if (Math.hypot(P.x - p.x, P.y - p.y) < 20) {
+      if (p.type === 'sword') { P.sword = p.sw; spawnP(p.x, p.y, SWORDS[p.sw].col, 12, 3); }
+      else { P.hp = Math.min(P.maxHp, P.hp + 1); spawnP(p.x, p.y, '#f44', 10, 3); }
+      return false;
+    }
+    p.life--; return p.life > 0;
+  });
+
+  // Particles
   particles = particles.filter(p => {
-    p.x += p.vx; p.y += p.vy;
-    p.vx *= 0.95; p.vy *= 0.95;
-    p.life--;
+    p.x += p.vx; p.y += p.vy; p.vx *= 0.94; p.vy *= 0.94; p.life--;
     return p.life > 0;
   });
 }
 
 function draw() {
-  bx.fillStyle = '#0a0a12';
-  bx.fillRect(0, 0, W, H);
-  
-  // Grid/floor
-  bx.strokeStyle = '#151520';
-  bx.lineWidth = 0.5;
-  for (let x = 0; x < W; x += 16) { bx.beginPath(); bx.moveTo(x, 0); bx.lineTo(x, H); bx.stroke(); }
-  for (let y = 0; y < H; y += 16) { bx.beginPath(); bx.moveTo(0, y); bx.lineTo(W, y); bx.stroke(); }
-  
+  let W = c.width, H = c.height;
+  let sx = shake > 0 ? (Math.random()-0.5)*shake*3 : 0;
+  let sy = shake > 0 ? (Math.random()-0.5)*shake*3 : 0;
+
+  x.save();
+  x.translate(sx, sy);
+
+  // Background
+  x.fillStyle = '#0a0a12';
+  x.fillRect(-10, -10, W+20, H+20);
+
+  // Grid
+  x.strokeStyle = '#14141f';
+  x.lineWidth = 1;
+  for (let gx = 0; gx < W; gx += 40) { x.beginPath(); x.moveTo(gx, 0); x.lineTo(gx, H); x.stroke(); }
+  for (let gy = 0; gy < H; gy += 40) { x.beginPath(); x.moveTo(0, gy); x.lineTo(W, gy); x.stroke(); }
+
   // Walls
-  bx.fillStyle = '#1a1a2e';
-  bx.fillRect(0, 0, W, 6); bx.fillRect(0, H-6, W, 6);
-  bx.fillRect(0, 0, 6, H); bx.fillRect(W-6, 0, 6, H);
-  
+  x.fillStyle = '#1a1a2e';
+  x.fillRect(0,0,W,8); x.fillRect(0,H-8,W,8);
+  x.fillRect(0,0,8,H); x.fillRect(W-8,0,8,H);
+
   // Exit door
   if (exitDoor) {
-    bx.fillStyle = frameCount % 20 < 10 ? '#0ff' : '#088';
-    bx.fillRect(exitDoor.x - 5, exitDoor.y - 8, 10, 16);
-    bx.fillStyle = '#000';
-    bx.fillRect(exitDoor.x - 3, exitDoor.y - 6, 6, 12);
+    x.fillStyle = frame % 30 < 15 ? '#0ff' : '#066';
+    x.fillRect(exitDoor.x-10, exitDoor.y-18, 20, 36);
+    x.fillStyle = '#0a0a12';
+    x.fillRect(exitDoor.x-6, exitDoor.y-14, 12, 28);
+    x.fillStyle = '#0ff';
+    x.font = '10px monospace';
+    x.fillText('EXIT', exitDoor.x-12, exitDoor.y-22);
   }
-  
+
   // Pickups
   pickups.forEach(p => {
+    let blink = Math.sin(frame * 0.1) > 0;
     if (p.type === 'sword') {
-      bx.fillStyle = SWORDS[p.sword].color;
-      bx.fillRect(p.x - 2, p.y - 5, 4, 10);
+      x.fillStyle = blink ? SWORDS[p.sw].col : '#555';
+      x.fillRect(p.x-3, p.y-10, 6, 20);
+      x.fillRect(p.x-8, p.y-2, 16, 4);
     } else {
-      bx.fillStyle = '#f00';
-      bx.fillRect(p.x - 2, p.y - 2, 4, 4);
-      bx.fillStyle = '#f88';
-      bx.fillRect(p.x - 1, p.y - 1, 2, 2);
+      x.fillStyle = blink ? '#f44' : '#a22';
+      x.beginPath(); x.arc(p.x, p.y, 6, 0, Math.PI*2); x.fill();
+      x.fillStyle = '#fff';
+      x.fillRect(p.x-4, p.y-1, 8, 2);
+      x.fillRect(p.x-1, p.y-4, 2, 8);
     }
   });
-  
+
   // Enemies
   enemies.forEach(e => {
     if (e.hp <= 0) return;
-    let c = e.hitFlash > 0 ? '#fff' : e.color;
-    bx.fillStyle = c;
-    bx.fillRect(e.x - e.size/2, e.y - e.size/2, e.size, e.size);
-    
-    // Eyes for aliens
-    if (e.color.startsWith('#0')) {
-      let ea = angle(e.x, e.y, player.x, player.y);
-      bx.fillStyle = '#f00';
-      bx.fillRect(e.x + Math.cos(ea)*2 - 1, e.y + Math.sin(ea)*2 - 2, 2, 1);
-      bx.fillRect(e.x + Math.cos(ea)*2 - 1, e.y + Math.sin(ea)*2, 2, 1);
+    let col = e.flash > 0 ? '#fff' : e.col;
+
+    // Body
+    x.fillStyle = col;
+    if (e.ai === 'turret') {
+      // Square robot
+      x.fillRect(e.x-e.sz/2, e.y-e.sz/2, e.sz, e.sz);
+      // Barrel
+      let a = ang(e, P);
+      x.strokeStyle = col; x.lineWidth = 3;
+      x.beginPath(); x.moveTo(e.x, e.y);
+      x.lineTo(e.x + Math.cos(a)*e.sz, e.y + Math.sin(a)*e.sz); x.stroke();
+    } else {
+      x.beginPath(); x.arc(e.x, e.y, e.sz/2, 0, Math.PI*2); x.fill();
     }
-    // Antenna for robots
-    if (e.color.startsWith('#a') || e.color.startsWith('#8') || e.color.startsWith('#c')) {
-      bx.fillStyle = '#f00';
-      bx.fillRect(e.x - 1, e.y - e.size/2 - 3, 2, 3);
-      bx.fillRect(e.x - 2, e.y - e.size/2 - 4, 4, 1);
+
+    // Eyes
+    let ea = ang(e, P);
+    if (e.col.startsWith('#') && (e.col[1] >= '0' && e.col[1] <= '5')) {
+      // Alien — red eyes
+      x.fillStyle = '#f00';
+      x.beginPath(); x.arc(e.x + Math.cos(ea-0.3)*e.sz*0.25, e.y + Math.sin(ea-0.3)*e.sz*0.25, 2, 0, Math.PI*2); x.fill();
+      x.beginPath(); x.arc(e.x + Math.cos(ea+0.3)*e.sz*0.25, e.y + Math.sin(ea+0.3)*e.sz*0.25, 2, 0, Math.PI*2); x.fill();
+    } else {
+      // Robot — blue LED
+      x.fillStyle = '#08f';
+      x.beginPath(); x.arc(e.x + Math.cos(ea)*e.sz*0.2, e.y + Math.sin(ea)*e.sz*0.2, 3, 0, Math.PI*2); x.fill();
     }
-    
+
     // HP bar
     if (e.hp < e.maxHp) {
-      bx.fillStyle = '#300';
-      bx.fillRect(e.x - e.size/2, e.y - e.size/2 - 4, e.size, 2);
-      bx.fillStyle = '#f00';
-      bx.fillRect(e.x - e.size/2, e.y - e.size/2 - 4, e.size * (e.hp / e.maxHp), 2);
+      let bw = e.sz + 6;
+      x.fillStyle = '#300';
+      x.fillRect(e.x - bw/2, e.y - e.sz/2 - 10, bw, 4);
+      x.fillStyle = '#f00';
+      x.fillRect(e.x - bw/2, e.y - e.sz/2 - 10, bw * (e.hp/e.maxHp), 4);
     }
   });
-  
-  // Projectiles
-  projectiles.forEach(p => {
-    bx.fillStyle = p.color;
-    bx.fillRect(p.x - 1.5, p.y - 1.5, 3, 3);
+
+  // Bullets
+  bullets.forEach(b => {
+    x.fillStyle = b.col;
+    x.shadowColor = b.col; x.shadowBlur = 8;
+    x.beginPath(); x.arc(b.x, b.y, 4, 0, Math.PI*2); x.fill();
+    x.shadowBlur = 0;
   });
-  
+
   // Player
-  if (invTimer > 0 && frameCount % 4 < 2) {} else {
+  if (!(P.invT > 0 && frame % 4 < 2)) {
     // Body
-    bx.fillStyle = player.dashing ? '#88f' : '#48f';
-    bx.fillRect(player.x - 4, player.y - 4, 8, 8);
+    x.fillStyle = P.dashT > 0 ? '#88f' : '#48f';
+    x.beginPath(); x.arc(P.x, P.y, 10, 0, Math.PI*2); x.fill();
     // Visor
-    bx.fillStyle = '#0ff';
-    let vx = Math.cos(player.facing) * 2;
-    let vy = Math.sin(player.facing) * 2;
-    bx.fillRect(player.x + vx - 1, player.y + vy - 2, 3, 2);
+    x.fillStyle = '#0ff';
+    let vx = Math.cos(P.facing)*6, vy = Math.sin(P.facing)*6;
+    x.fillRect(P.x+vx-3, P.y+vy-2, 6, 4);
+    // Outline
+    x.strokeStyle = '#28f'; x.lineWidth = 2;
+    x.beginPath(); x.arc(P.x, P.y, 10, 0, Math.PI*2); x.stroke();
   }
-  
-  // Sword slash
-  if (player.slashing) {
-    let sw = SWORDS[player.sword];
-    let progress = player.slashProgress;
-    bx.strokeStyle = sw.color;
-    bx.lineWidth = 2;
-    bx.shadowColor = sw.color;
-    bx.shadowBlur = 6;
-    bx.beginPath();
-    let startA = player.slashAngle - sw.arc/2;
-    let endA = startA + sw.arc * progress;
-    bx.arc(player.x, player.y, sw.range, startA, endA);
-    bx.stroke();
+
+  // Slash arc
+  if (P.slashing) {
+    let sw = SWORDS[P.sword];
+    let startA = P.slashAngle - sw.arc/2;
+    let curA = startA + sw.arc * P.slashT;
     
-    // Tip glow
-    let tipX = player.x + Math.cos(endA) * sw.range;
-    let tipY = player.y + Math.sin(endA) * sw.range;
-    bx.fillStyle = sw.color;
-    bx.fillRect(tipX - 2, tipY - 2, 4, 4);
-    bx.shadowBlur = 0;
+    x.strokeStyle = sw.col; x.lineWidth = 3;
+    x.shadowColor = sw.col; x.shadowBlur = 12;
+    x.beginPath();
+    x.arc(P.x, P.y, sw.range, startA, curA);
+    x.stroke();
+
+    // Tip
+    let tx = P.x + Math.cos(curA)*sw.range;
+    let ty = P.y + Math.sin(curA)*sw.range;
+    x.fillStyle = sw.col;
+    x.beginPath(); x.arc(tx, ty, 5, 0, Math.PI*2); x.fill();
+    x.shadowBlur = 0;
+
+    // Trail particles
+    spawnP(tx, ty, sw.col, 1, 1);
   }
-  
+
   // Particles
   particles.forEach(p => {
-    let alpha = p.life / 40;
-    bx.globalAlpha = alpha;
-    bx.fillStyle = p.color;
-    bx.fillRect(p.x - p.size/2, p.y - p.size/2, p.size, p.size);
+    x.globalAlpha = Math.min(1, p.life / 20);
+    x.fillStyle = p.col;
+    x.fillRect(p.x - p.sz/2, p.y - p.sz/2, p.sz, p.sz);
   });
-  bx.globalAlpha = 1;
-  
-  // Draw buffer to main canvas with shake
-  let sx = screenShake > 0 ? (Math.random()-0.5) * screenShake * 2 : 0;
-  let sy = screenShake > 0 ? (Math.random()-0.5) * screenShake * 2 : 0;
-  if (screenShake > 0) screenShake--;
-  
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(buf, sx * SCALE, sy * SCALE, W * SCALE, H * SCALE);
-}
+  x.globalAlpha = 1;
 
-function updateUI() {
-  let sw = SWORDS[player.sword];
-  let hearts = '';
-  for (let i = 0; i < player.maxHp; i++) hearts += i < player.hp ? '❤️' : '🖤';
-  document.getElementById('hp-bar').textContent = hearts;
-  document.getElementById('sword-name').innerHTML = `<span style="color:${sw.color}">⚔ ${sw.name}</span>`;
-  document.getElementById('score-info').textContent = `SCORE: ${score} | KILLS: ${killCount}`;
-}
+  x.restore();
 
-function gameLoop() {
-  frameCount++;
-  if (state === 'playing') {
-    updatePlayer();
-    updateEnemies();
-    updateProjectiles();
-    updateParticles();
-    updateUI();
+  // === HUD (not affected by shake) ===
+  // HP
+  x.font = 'bold 20px monospace';
+  for (let i = 0; i < P.maxHp; i++) {
+    x.fillStyle = i < P.hp ? '#f44' : '#333';
+    x.fillText('♥', 15 + i * 26, 30);
   }
-  draw();
-  requestAnimationFrame(gameLoop);
+
+  // Sword
+  let sw = SWORDS[P.sword];
+  x.fillStyle = sw.col; x.font = 'bold 16px monospace';
+  x.fillText('⚔ ' + sw.name, 15, 55);
+
+  // Room
+  let roomLabel = 'ROOM ' + roomNum;
+  if (roomNum % 5 === 0) roomLabel += ' — BOSS';
+  else if (roomNum % 2 === 0) roomLabel += ' — ROBOTS';
+  else roomLabel += ' — ALIENS';
+  x.fillStyle = '#0f0'; x.font = 'bold 14px monospace';
+  x.fillText(roomLabel, 15, 78);
+
+  // Score
+  x.fillStyle = '#888'; x.font = '13px monospace';
+  x.fillText('SCORE: ' + score + '  KILLS: ' + kills, 15, 98);
+
+  // Room clear message
+  if (exitDoor) {
+    x.fillStyle = '#0ff'; x.font = 'bold 22px monospace';
+    x.shadowColor = '#0ff'; x.shadowBlur = 10;
+    let txt = '>> ROOM CLEAR — FIND THE EXIT >>';
+    x.fillText(txt, W/2 - x.measureText(txt).width/2, 40);
+    x.shadowBlur = 0;
+  }
+
+  // === SCREENS ===
+  if (state === 'title') {
+    x.fillStyle = 'rgba(10,10,18,0.95)'; x.fillRect(0, 0, W, H);
+    
+    x.shadowColor = '#0ff'; x.shadowBlur = 30;
+    x.fillStyle = '#0ff'; x.font = 'bold 64px monospace';
+    let title = 'VOID BLADE';
+    x.fillText(title, W/2 - x.measureText(title).width/2, H/2 - 100);
+    x.shadowBlur = 0;
+
+    x.fillStyle = '#0ff'; x.font = '20px monospace';
+    let sub = 'A Space Roguelike';
+    x.fillText(sub, W/2 - x.measureText(sub).width/2, H/2 - 60);
+
+    x.fillStyle = '#888'; x.font = '16px monospace';
+    let controls = [
+      'WASD / Arrows — Move',
+      'SPACE — Sword Slash',
+      'SHIFT — Dash (invincible)',
+      '1 / 2 / 3 — Switch Sword',
+    ];
+    controls.forEach((t, i) => {
+      x.fillText(t, W/2 - x.measureText(t).width/2, H/2 - 10 + i * 24);
+    });
+
+    if (Math.sin(frame * 0.06) > 0) {
+      x.fillStyle = '#0f0'; x.font = 'bold 20px monospace';
+      let start = '[ CLICK OR PRESS ENTER ]';
+      x.fillText(start, W/2 - x.measureText(start).width/2, H/2 + 120);
+    }
+  }
+
+  if (state === 'dead') {
+    x.fillStyle = 'rgba(0,0,0,0.8)'; x.fillRect(0, 0, W, H);
+    
+    x.fillStyle = '#f00'; x.font = 'bold 52px monospace';
+    let d1 = 'YOU DIED';
+    x.fillText(d1, W/2 - x.measureText(d1).width/2, H/2 - 40);
+
+    x.fillStyle = '#888'; x.font = '18px monospace';
+    let d2 = 'Room ' + roomNum + ' — ' + kills + ' kills — Score: ' + score;
+    x.fillText(d2, W/2 - x.measureText(d2).width/2, H/2 + 10);
+
+    if (Math.sin(frame * 0.06) > 0) {
+      x.fillStyle = '#0f0'; x.font = 'bold 20px monospace';
+      let r = '[ CLICK OR PRESS ENTER TO RETRY ]';
+      x.fillText(r, W/2 - x.measureText(r).width/2, H/2 + 60);
+    }
+  }
 }
 
 function startGame() {
-  if (state === 'title') {
+  if (state === 'title' || state === 'dead') {
     state = 'playing';
-    document.getElementById('title-screen').style.display = 'none';
-    init();
-  } else if (state === 'dead') {
-    state = 'playing';
-    document.getElementById('death-screen').style.display = 'none';
     init();
   }
 }
 
-// Click anywhere to start/restart
-canvas.addEventListener('click', startGame);
-document.getElementById('title-screen').addEventListener('click', startGame);
+function loop() {
+  frame++;
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
 
 // Input
 window.addEventListener('keydown', e => {
   keys[e.key.toLowerCase()] = true;
-  
   if (e.key === 'Enter') startGame();
-  
   if (state === 'playing') {
-    if (e.key === ' ' && slashCooldown <= 0 && !player.slashing) {
-      player.slashing = true;
-      player.slashAngle = player.facing;
-      player.slashProgress = 0;
-      slashCooldown = SWORDS[player.sword].speed;
+    if (e.key === ' ' && P.slashCD <= 0 && !P.slashing) {
+      P.slashing = true; P.slashAngle = P.facing; P.slashT = 0;
+      P.slashCD = SWORDS[P.sword].spd;
     }
-    if (e.key === 'Shift' && dashCooldown <= 0) {
-      dashTimer = 8;
-      dashCooldown = 40;
-      player.dashing = true;
-      spawnParticles(player.x, player.y, '#88f', 5, 1);
+    if (e.key === 'Shift' && P.dashCD <= 0) {
+      P.dashT = 10; P.dashCD = 50;
+      spawnP(P.x, P.y, '#88f', 8, 2);
     }
-    if (e.key === '1') player.sword = 0;
-    if (e.key === '2') player.sword = 1;
-    if (e.key === '3') player.sword = 2;
+    if (e.key === '1') P.sword = 0;
+    if (e.key === '2') P.sword = 1;
+    if (e.key === '3') P.sword = 2;
   }
-  
-  e.preventDefault();
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault();
 });
 
-window.addEventListener('keyup', e => {
-  keys[e.key.toLowerCase()] = false;
-});
+window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+c.addEventListener('click', startGame);
 
-gameLoop();
+loop();
 </script>
 </body>
 </html>
