@@ -29,12 +29,12 @@ canvas { image-rendering: pixelated; image-rendering: crisp-edges; border: 1px s
   <p>SPACE — Slash</p>
   <p>1/2/3 — Switch Sword</p>
   <p>SHIFT — Dash</p>
-  <p class="start">[ PRESS ENTER TO BEGIN ]</p>
+  <p class="start" style="cursor:pointer" onclick="startGame()">[ CLICK OR PRESS ENTER TO BEGIN ]</p>
 </div>
 <div id="death-screen">
   <h1>YOU DIED</h1>
   <p id="death-stats"></p>
-  <p class="restart">[ PRESS ENTER TO RETRY ]</p>
+  <p class="restart" style="cursor:pointer" onclick="startGame()">[ CLICK OR PRESS ENTER TO RETRY ]</p>
 </div>
 <div id="room-clear">ROOM CLEAR — FIND THE EXIT</div>
 <div id="ui">
@@ -531,21 +531,27 @@ function gameLoop() {
   requestAnimationFrame(gameLoop);
 }
 
+function startGame() {
+  if (state === 'title') {
+    state = 'playing';
+    document.getElementById('title-screen').style.display = 'none';
+    init();
+  } else if (state === 'dead') {
+    state = 'playing';
+    document.getElementById('death-screen').style.display = 'none';
+    init();
+  }
+}
+
+// Click anywhere to start/restart
+canvas.addEventListener('click', startGame);
+document.getElementById('title-screen').addEventListener('click', startGame);
+
 // Input
 window.addEventListener('keydown', e => {
   keys[e.key.toLowerCase()] = true;
   
-  if (e.key === 'Enter') {
-    if (state === 'title') {
-      state = 'playing';
-      document.getElementById('title-screen').style.display = 'none';
-      init();
-    } else if (state === 'dead') {
-      state = 'playing';
-      document.getElementById('death-screen').style.display = 'none';
-      init();
-    }
-  }
+  if (e.key === 'Enter') startGame();
   
   if (state === 'playing') {
     if (e.key === ' ' && slashCooldown <= 0 && !player.slashing) {
